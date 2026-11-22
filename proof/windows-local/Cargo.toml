@@ -1,0 +1,13 @@
+[package]
+name = "windows-local-proof"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+chrono = { package = "sad-chrono", path = "CHRONO_PATH" }
+
+[profile.release]
+debug = "line-tables-only"

@@ -1,0 +1,54 @@
+name: Windows Local proof
+
+on:
+  push:
+    branches: [proof/windows-local-conversions]
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      BASE_SHA: 287e4a620c887d7e0fc18b369b228d045cb6ab9c
+      HEAD_SHA: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: proof-src
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
+          persist-credentials: false
+      - if: env.HEAD_SHA != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          path: head
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: "1.99.1"
+      - name: Runner details
+        shell: pwsh
+        run: |
+          rustc -Vv
+          cargo -V
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List
+          [System.Environment]::OSVersion.VersionString
+          tzutil /g
+      - name: Proof
+        shell: pwsh
+        run: |
+          $labels = @("base")
+          if ($env:HEAD_SHA -ne "") { $labels += "head" }
+          ./proof-src/proof/windows-local/run.ps1 -Labels $labels
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: windows-local-proof
+          path: results.jsonl
