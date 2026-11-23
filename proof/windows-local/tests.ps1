@@ -31,3 +31,5 @@ $text.Replace("if *cached_year == year {", "if true {") | Set-Content -NoNewline
 Expect "basetest" "repeated_year_reuses_loaded_rules" $false "366 rule queries for 366 conversions"
 Expect "head" "offset::local" $true ""
 Expect "mutant" "cached_rules_match_windows_rules" $false "assertion"
+Write-Output "regression tests behaved as expected"
+exit 0
