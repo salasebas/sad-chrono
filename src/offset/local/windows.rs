@@ -8,11 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::time::{Duration, Instant};
 
-use super::win_bindings::{GetTimeZoneInformationForYear, SYSTEMTIME, TIME_ZONE_INFORMATION};
+use super::win_bindings::{
+    DYNAMIC_TIME_ZONE_INFORMATION, GetDynamicTimeZoneInformation, GetTimeZoneInformationForYear,
+    SYSTEMTIME, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+};
 
 use crate::offset::local::{Transition, lookup_with_dst_transitions};
 use crate::{Datelike, FixedOffset, MappedLocalTime, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
@@ -28,7 +33,7 @@ pub(super) fn offset_from_utc_datetime(utc: &NaiveDateTime) -> MappedLocalTime<F
     // Using a `TzInfo` based on the year of an UTC datetime is technically wrong, we should be
     // using the rules for the year of the corresponding local time. But this matches what
     // `SystemTimeToTzSpecificLocalTime` is documented to do.
-    let tz_info = match TzInfo::for_year(utc.year()) {
+    let tz_info = match tz_info_for_year(utc.year()) {
         Some(tz_info) => tz_info,
         None => return MappedLocalTime::None,
     };
@@ -71,7 +76,7 @@ pub(super) fn offset_from_utc_datetime(utc: &NaiveDateTime) -> MappedLocalTime<F
 // ambiguous cases (during a DST transition). Instead we get the timezone information for the
 // current year and compute it ourselves, like we do on Unix.
 pub(super) fn offset_from_local_datetime(local: &NaiveDateTime) -> MappedLocalTime<FixedOffset> {
-    let tz_info = match TzInfo::for_year(local.year()) {
+    let tz_info = match tz_info_for_year(local.year()) {
         Some(tz_info) => tz_info,
         None => return MappedLocalTime::None,
     };
@@ -106,6 +111,106 @@ pub(super) fn offset_from_local_datetime(local: &NaiveDateTime) -> MappedLocalTi
     }
 }
 
+// `GetTimeZoneInformationForYear` reads the registry for every year outside a small cache inside
+// Windows, so each thread keeps the rules it has loaded. The cache belongs to the time zone that
+// `GetDynamicTimeZoneInformation` reported when it was filled, and is emptied when that changes.
+// Windows updates can change the rules for a year without changing the time zone, so the cache is
+// also emptied after `MAX_CACHE_AGE`.
+const CACHED_YEARS: usize = 128;
+const MAX_CACHE_AGE: Duration = Duration::from_secs(1);
+
+thread_local! {
+    static CACHE: RefCell<Option<Box<Cache>>> = const { RefCell::new(None) };
+}
+
+fn tz_info_for_year(year: i32) -> Option<TzInfo> {
+    let Some(zone) = Zone::current() else {
+        return TzInfo::for_year(year);
+    };
+    CACHE
+        .try_with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let cache = match &mut *cache {
+                Some(cache) if cache.zone == zone && cache.created.elapsed() < MAX_CACHE_AGE => {
+                    cache
+                }
+                slot => slot.insert(Box::new(Cache::new(zone))),
+            };
+            cache.tz_info(year)
+        })
+        .unwrap_or_else(|_| TzInfo::for_year(year))
+}
+
+struct Cache {
+    zone: Zone,
+    created: Instant,
+    years: [Option<(i32, TzInfo)>; CACHED_YEARS],
+}
+
+impl Cache {
+    fn new(zone: Zone) -> Cache {
+        Cache { zone, created: Instant::now(), years: [None; CACHED_YEARS] }
+    }
+
+    fn tz_info(&mut self, year: i32) -> Option<TzInfo> {
+        let slot = &mut self.years[year.rem_euclid(CACHED_YEARS as i32) as usize];
+        if let Some((cached_year, tz_info)) = slot {
+            if *cached_year == year {
+                return Some(*tz_info);
+            }
+        }
+        let tz_info = TzInfo::for_year(year)?;
+        // The rules are only known to belong to `self.zone` if it was current before and after
+        // loading them.
+        if Zone::current().as_ref() == Some(&self.zone) {
+            *slot = Some((year, tz_info));
+        }
+        Some(tz_info)
+    }
+}
+
+/// The current Windows time zone, including the settings that select its rules.
+struct Zone(DYNAMIC_TIME_ZONE_INFORMATION);
+
+impl Zone {
+    fn current() -> Option<Zone> {
+        let mut zone = DYNAMIC_TIME_ZONE_INFORMATION::default();
+        // SAFETY: `zone` is a valid, writable `DYNAMIC_TIME_ZONE_INFORMATION`.
+        match unsafe { GetDynamicTimeZoneInformation(&mut zone) } {
+            TIME_ZONE_ID_INVALID => None,
+            _ => Some(Zone(zone)),
+        }
+    }
+}
+
+impl PartialEq for Zone {
+    fn eq(&self, other: &Zone) -> bool {
+        let (a, b) = (&self.0, &other.0);
+        a.Bias == b.Bias
+            && a.StandardName == b.StandardName
+            && system_time_fields(&a.StandardDate) == system_time_fields(&b.StandardDate)
+            && a.StandardBias == b.StandardBias
+            && a.DaylightName == b.DaylightName
+            && system_time_fields(&a.DaylightDate) == system_time_fields(&b.DaylightDate)
+            && a.DaylightBias == b.DaylightBias
+            && a.TimeZoneKeyName == b.TimeZoneKeyName
+            && a.DynamicDaylightTimeDisabled == b.DynamicDaylightTimeDisabled
+    }
+}
+
+fn system_time_fields(st: &SYSTEMTIME) -> [u16; 8] {
+    [
+        st.wYear,
+        st.wMonth,
+        st.wDayOfWeek,
+        st.wDay,
+        st.wHour,
+        st.wMinute,
+        st.wSecond,
+        st.wMilliseconds,
+    ]
+}
+
 // The basis for Windows timezone and DST support has been in place since Windows 2000. It does not
 // allow for complex rules like the IANA timezone database:
 // - A timezone has the same base offset the whole year.
@@ -115,6 +220,7 @@ pub(super) fn offset_from_local_datetime(local: &NaiveDateTime) -> MappedLocalTi
 //
 // These details don't matter much, we just work with the offsets and transition dates Windows
 // returns through `GetTimeZoneInformationForYear` for a particular year.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct TzInfo {
     // Offset from UTC during standard time.
     std_offset: FixedOffset,
@@ -133,6 +239,8 @@ impl TzInfo {
         // little sense. But whatever is extrapolated for 1601 or 30827 is what can be extrapolated
         // for years beyond.
         let ref_year = year.clamp(1601, 30827) as u16;
+        #[cfg(test)]
+        tests::RULE_QUERIES.set(tests::RULE_QUERIES.get() + 1);
         let tz_info = unsafe {
             let mut tz_info = MaybeUninit::<TIME_ZONE_INFORMATION>::uninit();
             if GetTimeZoneInformationForYear(ref_year, ptr::null_mut(), tz_info.as_mut_ptr()) == 0 {
@@ -212,13 +320,43 @@ fn naive_date_time_from_system_time(
 
 #[cfg(test)]
 mod tests {
+    use super::{TzInfo, tz_info_for_year};
     use crate::offset::local::win_bindings::{
         FILETIME, SYSTEMTIME, SystemTimeToFileTime, TzSpecificLocalTimeToSystemTime,
     };
-    use crate::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, TimeDelta};
+    use crate::{DateTime, Days, FixedOffset, Local, NaiveDate, NaiveDateTime, TimeDelta};
     use crate::{Datelike, TimeZone, Timelike};
+    use std::cell::Cell;
     use std::mem::MaybeUninit;
     use std::ptr;
+
+    thread_local! {
+        pub(super) static RULE_QUERIES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn repeated_year_reuses_loaded_rules() {
+        let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let before = RULE_QUERIES.get();
+        for day in 0..366 {
+            let utc = (start + Days::new(day)).and_utc();
+            assert_eq!(utc.with_timezone(&Local).naive_utc(), utc.naive_utc());
+        }
+        let queries = RULE_QUERIES.get() - before;
+        // One load, plus at most one reload if the cache ages out during the loop.
+        assert!(queries <= 2, "{queries} rule queries for 366 conversions in 2024");
+    }
+
+    #[test]
+    fn cached_rules_match_windows_rules() {
+        // Pairs of years 128 apart share a cache slot.
+        let years = [-5000, 1601, 1729, 1975, 2004, 2007, 2024, 2152, 2280, 30827, 40000];
+        for _ in 0..3 {
+            for year in years {
+                assert_eq!(tz_info_for_year(year), TzInfo::for_year(year), "year {year}");
+            }
+        }
+    }
 
     #[test]
     fn verify_against_tz_specific_local_time_to_system_time() {

@@ -1,3 +1,4 @@
+windows_link::link!("kernel32.dll" "system" fn GetDynamicTimeZoneInformation(ptimezoneinformation : *mut DYNAMIC_TIME_ZONE_INFORMATION) -> u32);
 windows_link::link!("kernel32.dll" "system" fn GetTimeZoneInformationForYear(wyear : u16, pdtzi : *const DYNAMIC_TIME_ZONE_INFORMATION, ptzi : *mut TIME_ZONE_INFORMATION) -> BOOL);
 windows_link::link!("kernel32.dll" "system" fn SystemTimeToFileTime(lpsystemtime : *const SYSTEMTIME, lpfiletime : *mut FILETIME) -> BOOL);
 windows_link::link!("kernel32.dll" "system" fn SystemTimeToTzSpecificLocalTime(lptimezoneinformation : *const TIME_ZONE_INFORMATION, lpuniversaltime : *const SYSTEMTIME, lplocaltime : *mut SYSTEMTIME) -> BOOL);
@@ -39,6 +40,7 @@ pub struct SYSTEMTIME {
     pub wSecond: u16,
     pub wMilliseconds: u16,
 }
+pub const TIME_ZONE_ID_INVALID: u32 = 4294967295;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TIME_ZONE_INFORMATION {

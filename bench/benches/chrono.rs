@@ -107,6 +107,18 @@ fn bench_get_local_time(c: &mut Criterion) {
     });
 }
 
+fn bench_utc_to_local_across_years(c: &mut Criterion) {
+    let timestamps: Vec<DateTime<Utc>> =
+        (1970..2060).map(|year| Utc.with_ymd_and_hms(year, 7, 15, 12, 0, 0).unwrap()).collect();
+    c.bench_function("bench_utc_to_local_across_years", |b| {
+        b.iter(|| {
+            for dt in &timestamps {
+                black_box(black_box(dt).with_timezone(&Local));
+            }
+        })
+    });
+}
+
 /// Returns the number of multiples of `div` in the range `start..end`.
 ///
 /// If the range `start..end` is back-to-front, i.e. `start` is greater than `end`, the
@@ -254,6 +266,7 @@ criterion_group!(
     bench_year_flags_from_year,
     bench_num_days_from_ce,
     bench_get_local_time,
+    bench_utc_to_local_across_years,
     bench_parse_strftime,
     bench_format,
     bench_format_with_items,

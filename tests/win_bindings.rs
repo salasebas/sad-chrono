@@ -11,8 +11,10 @@ fn gen_bindings() {
         "--flat",
         "--sys",
         "--filter",
+        "GetDynamicTimeZoneInformation",
         "GetTimeZoneInformationForYear",
         "SystemTimeToFileTime",
+        "TIME_ZONE_ID_INVALID",
         "SystemTimeToTzSpecificLocalTime",
         "TzSpecificLocalTimeToSystemTime",
     ]);
