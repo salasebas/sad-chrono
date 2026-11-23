@@ -29,6 +29,10 @@ tzutil /s $BenchZone
 & (Bin $Labels[0]) profile | Tee-Object -Append -FilePath $out
 if ($LASTEXITCODE -ne 0) { throw "profile failed" }
 
+for ($r = 0; $r -lt 2; $r++) {
+    foreach ($label in $Labels) { Run $label "fresh" }
+}
+
 for ($r = 0; $r -lt $Rounds; $r++) {
     $order = @($Labels)
     if ($r % 2 -eq 1) { [array]::Reverse($order) }

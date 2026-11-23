@@ -309,6 +309,78 @@ fn profile() {
     }
 }
 
+/// Time of `op` as the first thing a fresh thread does, in nanoseconds, for each sample.
+fn measure_fresh(op: fn()) -> Vec<f64> {
+    const THREADS: u32 = 2000;
+    (0..SAMPLES)
+        .map(|_| {
+            let total: std::time::Duration = (0..THREADS)
+                .map(|_| {
+                    std::thread::spawn(move || {
+                        let start = Instant::now();
+                        op();
+                        start.elapsed()
+                    })
+                    .join()
+                    .unwrap()
+                })
+                .sum();
+            total.as_nanos() as f64 / THREADS as f64
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn fresh_profile(label: &str) {
+    use ffi::*;
+    use std::cell::RefCell;
+    use std::mem::MaybeUninit;
+
+    thread_local! {
+        static BOXED: RefCell<Option<Box<[u64; 800]>>> = const { RefCell::new(None) };
+    }
+    report("fresh", label, "fresh_nothing", 1, measure_fresh(|| {}));
+    report("fresh", label, "fresh_instant_now", 1, measure_fresh(|| {
+        black_box(Instant::now());
+    }));
+    report("fresh", label, "fresh_GetDynamicTimeZoneInformation", 1, measure_fresh(|| {
+        let mut out = MaybeUninit::<DynamicTimeZoneInformation>::zeroed();
+        black_box(unsafe { GetDynamicTimeZoneInformation(out.as_mut_ptr()) });
+        black_box(out);
+    }));
+    report("fresh", label, "fresh_GetTimeZoneInformationForYear_null", 1, measure_fresh(|| {
+        let mut tzi = MaybeUninit::<TimeZoneInformation>::uninit();
+        black_box(unsafe { GetTimeZoneInformationForYear(black_box(2026), std::ptr::null(), tzi.as_mut_ptr()) });
+        black_box(tzi);
+    }));
+    report("fresh", label, "fresh_two_GetDynamic_then_ForYear", 1, measure_fresh(|| {
+        let mut out = MaybeUninit::<DynamicTimeZoneInformation>::zeroed();
+        black_box(unsafe { GetDynamicTimeZoneInformation(out.as_mut_ptr()) });
+        let mut tzi = MaybeUninit::<TimeZoneInformation>::uninit();
+        black_box(unsafe { GetTimeZoneInformationForYear(black_box(2026), std::ptr::null(), tzi.as_mut_ptr()) });
+        black_box(unsafe { GetDynamicTimeZoneInformation(out.as_mut_ptr()) });
+        black_box((out, tzi));
+    }));
+    report("fresh", label, "fresh_box_6k", 1, measure_fresh(|| {
+        black_box(Box::new([0u64; 800]));
+    }));
+    report("fresh", label, "fresh_tls_box_6k", 1, measure_fresh(|| {
+        BOXED.with(|b| *b.borrow_mut() = Some(Box::new([0u64; 800])));
+    }));
+    report("fresh", label, "fresh_local_now", 1, measure_fresh(|| {
+        black_box(Local::now());
+    }));
+    report("fresh", label, "fresh_local_now_twice", 1, measure_fresh(|| {
+        black_box(Local::now());
+        black_box(Local::now());
+    }));
+}
+
+#[cfg(not(windows))]
+fn fresh_profile(_label: &str) {
+    panic!("fresh mode needs Windows");
+}
+
 #[cfg(not(windows))]
 fn profile() {
     panic!("profile mode needs Windows");
@@ -385,6 +457,7 @@ fn main() {
         (Some("bench"), Some(label)) => bench(label),
         (Some("checksum"), Some(label)) => checksum(label),
         (Some("reconfig"), Some(label)) => reconfig(label),
+        (Some("fresh"), Some(label)) => fresh_profile(label),
         _ => panic!("usage: windows-local-proof profile | bench <label> | checksum <label>"),
     }
 }

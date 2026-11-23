@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 90
     env:
       BASE_SHA: 287e4a620c887d7e0fc18b369b228d045cb6ab9c
-      HEAD_SHA: 3df2ec1f546d3f96ebc331cadcf46c40e23e05e4
+      HEAD_SHA: f1c7e411c3e618aacd45cce2583c221cfc569c9d
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
