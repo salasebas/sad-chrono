@@ -146,12 +146,12 @@ fn tz_info_for_year(year: i32) -> Option<TzInfo> {
 struct Cache {
     zone: Zone,
     created: Instant,
-    years: [Option<(i32, TzInfo)>; CACHED_YEARS],
+    years: Vec<Option<(i32, TzInfo)>>,
 }
 
 impl Cache {
     fn new(zone: Zone) -> Cache {
-        Cache { zone, created: Instant::now(), years: [None; CACHED_YEARS] }
+        Cache { zone, created: Instant::now(), years: vec![None; CACHED_YEARS] }
     }
 
     fn tz_info(&mut self, year: i32) -> Option<TzInfo> {
