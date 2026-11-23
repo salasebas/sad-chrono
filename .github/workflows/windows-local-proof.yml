@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 90
     env:
       BASE_SHA: 287e4a620c887d7e0fc18b369b228d045cb6ab9c
-      HEAD_SHA: ""
+      HEAD_SHA: 3df2ec1f546d3f96ebc331cadcf46c40e23e05e4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -41,6 +41,17 @@ jobs:
           Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List
           [System.Environment]::OSVersion.VersionString
           tzutil /g
+      - name: Regression tests
+        shell: pwsh
+        run: ./proof-src/proof/windows-local/tests.ps1
+      - name: Criterion benches
+        shell: pwsh
+        run: |
+          tzutil /s "Pacific Standard Time"
+          foreach ($label in @("base", "head")) {
+            cargo bench --manifest-path "$label/bench/Cargo.toml" --bench chrono -- "bench_get_local_time|bench_utc_to_local_across_years"
+            if ($LASTEXITCODE -ne 0) { throw "bench $label failed" }
+          }
       - name: Proof
         shell: pwsh
         run: |

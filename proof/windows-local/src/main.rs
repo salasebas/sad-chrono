@@ -75,36 +75,65 @@ fn stats(mut v: Vec<f64>) -> String {
     )
 }
 
-/// Runs `op(i)` `BATCH` times on each of `threads` threads and returns the wall time per call
-/// on one thread, in nanoseconds, for each sample.
+/// Runs `op(i)` `BATCH` times on each of `threads` threads and returns, for each sample, the time
+/// from the first thread starting to the last thread finishing, divided by `BATCH`, in nanoseconds.
 fn measure(threads: usize, op: &(dyn Fn(usize) + Sync)) -> Vec<f64> {
     let run = |batch: usize| {
-        if threads == 1 {
-            let start = Instant::now();
-            for i in 0..batch {
-                op(i);
-            }
-            return start.elapsed();
-        }
-        let barrier = Barrier::new(threads + 1);
-        std::thread::scope(|s| {
-            for t in 0..threads {
-                let barrier = &barrier;
-                s.spawn(move || {
-                    barrier.wait();
-                    for i in 0..batch {
-                        op(i + t * 7);
-                    }
-                });
-            }
-            barrier.wait();
-            let start = Instant::now();
-            start
-        })
-        .elapsed()
+        let barrier = Barrier::new(threads);
+        let spans: Vec<(Instant, Instant)> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..threads)
+                .map(|t| {
+                    let barrier = &barrier;
+                    s.spawn(move || {
+                        barrier.wait();
+                        let start = Instant::now();
+                        for i in 0..batch {
+                            op(i + t * 7);
+                        }
+                        (start, Instant::now())
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let start = spans.iter().map(|s| s.0).min().unwrap();
+        let end = spans.iter().map(|s| s.1).max().unwrap();
+        end - start
     };
     run(BATCH / 10);
     (0..SAMPLES).map(|_| run(BATCH).as_nanos() as f64 / BATCH as f64).collect()
+}
+
+/// Time of the first `Local::now()` on a fresh thread, in nanoseconds, for each sample.
+fn measure_fresh_thread() -> Vec<f64> {
+    const THREADS: u32 = 2000;
+    (0..SAMPLES)
+        .map(|_| {
+            let total: std::time::Duration = (0..THREADS)
+                .map(|_| {
+                    std::thread::spawn(|| {
+                        let start = Instant::now();
+                        black_box(Local::now());
+                        start.elapsed()
+                    })
+                    .join()
+                    .unwrap()
+                })
+                .sum();
+            total.as_nanos() as f64 / THREADS as f64
+        })
+        .collect()
+}
+
+fn wide_years() -> Vec<DateTime<Utc>> {
+    let mut rng = Lcg(0x31de);
+    (0..SET_LEN)
+        .map(|_| {
+            let year = 1601 + (rng.next() % 2400) as i32;
+            let offset = (rng.next() % (365 * 86_400)) as i64;
+            DateTime::from_timestamp(year_start(year) + offset, 0).unwrap()
+        })
+        .collect()
 }
 
 fn report(kind: &str, label: &str, name: &str, threads: usize, samples: Vec<f64>) {
@@ -119,6 +148,8 @@ fn bench(label: &str) {
     let mixed = mixed_years();
     let alternating = alternating_years();
     let local = local_repeated_year();
+    let wide = wide_years();
+    report("bench", label, "local_now_first_on_fresh_thread", 1, measure_fresh_thread());
     for threads in [1, 4] {
         report("bench", label, "utc_to_local_repeated_year", threads, measure(threads, &|i| {
             black_box(black_box(&repeated[i % SET_LEN]).with_timezone(&Local));
@@ -128,6 +159,9 @@ fn bench(label: &str) {
         }));
         report("bench", label, "utc_to_local_alternating_years", threads, measure(threads, &|i| {
             black_box(black_box(&alternating[i % SET_LEN]).with_timezone(&Local));
+        }));
+        report("bench", label, "utc_to_local_wide_years_cold", threads, measure(threads, &|i| {
+            black_box(black_box(&wide[i % SET_LEN]).with_timezone(&Local));
         }));
         report("bench", label, "local_now", threads, measure(threads, &|_| {
             black_box(Local::now());
@@ -297,7 +331,7 @@ fn reconfig(label: &str) {
     let observe = || {
         let s = summer.with_timezone(&Local).offset().local_minus_utc();
         let w = winter.with_timezone(&Local).offset().local_minus_utc();
-        let l = Local.from_local_datetime(&summer_local).earliest().map(|d| d.offset().local_minus_utc());
+        let l = Local.from_local_datetime(&summer_local).earliest().map_or(i32::MIN, |d| d.offset().local_minus_utc());
         let n = Local::now().offset().local_minus_utc();
         (s, w, l, n)
     };
@@ -310,7 +344,7 @@ fn reconfig(label: &str) {
     };
     let mut failures = 0;
     let (to_worker, from_main) = std::sync::mpsc::channel::<()>();
-    let (to_main, from_worker) = std::sync::mpsc::channel::<(i32, i32, Option<i32>, i32)>();
+    let (to_main, from_worker) = std::sync::mpsc::channel::<(i32, i32, i32, i32)>();
     std::thread::scope(|s| {
         s.spawn(move || {
             while from_main.recv().is_ok() {
@@ -330,12 +364,12 @@ fn reconfig(label: &str) {
             to_worker.send(()).unwrap();
             let worker_seen = from_worker.recv().unwrap();
             for (thread, (s, w, l, _now)) in [("main", main_seen), ("worker", worker_seen)] {
-                let ok = s == want_summer && w == want_winter && l == Some(want_summer);
+                let ok = s == want_summer && w == want_winter && l == want_summer;
                 if !ok {
                     failures += 1;
                 }
                 println!(
-                    "{{\"kind\":\"reconfig\",\"label\":\"{label}\",\"zone\":\"{zone}\",\"thread\":\"{thread}\",\"summer\":{s},\"winter\":{w},\"local\":{l:?},\"ok\":{ok}}}"
+                    "{{\"kind\":\"reconfig\",\"label\":\"{label}\",\"zone\":\"{zone}\",\"thread\":\"{thread}\",\"summer\":{s},\"winter\":{w},\"local\":{l},\"ok\":{ok}}}"
                 );
             }
         }

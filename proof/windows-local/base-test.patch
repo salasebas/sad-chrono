@@ -1,0 +1,44 @@
+diff --git a/src/offset/local/windows.rs b/src/offset/local/windows.rs
+index dcab6c4..90e69d3 100644
+--- a/src/offset/local/windows.rs
++++ b/src/offset/local/windows.rs
+@@ -133,6 +133,8 @@ impl TzInfo {
+         // little sense. But whatever is extrapolated for 1601 or 30827 is what can be extrapolated
+         // for years beyond.
+         let ref_year = year.clamp(1601, 30827) as u16;
++        #[cfg(test)]
++        tests::RULE_QUERIES.set(tests::RULE_QUERIES.get() + 1);
+         let tz_info = unsafe {
+             let mut tz_info = MaybeUninit::<TIME_ZONE_INFORMATION>::uninit();
+             if GetTimeZoneInformationForYear(ref_year, ptr::null_mut(), tz_info.as_mut_ptr()) == 0 {
+@@ -215,11 +217,29 @@ mod tests {
+     use crate::offset::local::win_bindings::{
+         FILETIME, SYSTEMTIME, SystemTimeToFileTime, TzSpecificLocalTimeToSystemTime,
+     };
+-    use crate::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, TimeDelta};
++    use crate::{DateTime, Days, FixedOffset, Local, NaiveDate, NaiveDateTime, TimeDelta};
+     use crate::{Datelike, TimeZone, Timelike};
++    use std::cell::Cell;
+     use std::mem::MaybeUninit;
+     use std::ptr;
+ 
++    thread_local! {
++        pub(super) static RULE_QUERIES: Cell<usize> = const { Cell::new(0) };
++    }
++
++    #[test]
++    fn repeated_year_reuses_loaded_rules() {
++        let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
++        let before = RULE_QUERIES.get();
++        for day in 0..366 {
++            let utc = (start + Days::new(day)).and_utc();
++            assert_eq!(utc.with_timezone(&Local).naive_utc(), utc.naive_utc());
++        }
++        let queries = RULE_QUERIES.get() - before;
++        // One load, plus at most one reload if the cache ages out during the loop.
++        assert!(queries <= 2, "{queries} rule queries for 366 conversions in 2024");
++    }
++
+     #[test]
+     fn verify_against_tz_specific_local_time_to_system_time() {
+         // The implementation in Windows itself is the source of truth on how to work with the OS
