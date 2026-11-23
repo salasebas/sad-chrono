@@ -127,18 +127,20 @@ fn tz_info_for_year(year: i32) -> Option<TzInfo> {
     let Some(zone) = Zone::current() else {
         return TzInfo::for_year(year);
     };
-    CACHE
-        .try_with(|cache| {
-            let mut cache = cache.borrow_mut();
-            let cache = match &mut *cache {
-                Some(cache) if cache.zone == zone && cache.created.elapsed() < MAX_CACHE_AGE => {
-                    cache
-                }
-                slot => slot.insert(Box::new(Cache::new(zone))),
-            };
-            cache.tz_info(year)
-        })
-        .unwrap_or_else(|_| TzInfo::for_year(year))
+    let cached = CACHE.try_with(|cache| {
+        let mut cache = cache.try_borrow_mut().ok()?;
+        let cache = match &mut *cache {
+            Some(cache) if cache.zone == zone && cache.created.elapsed() < MAX_CACHE_AGE => cache,
+            slot => slot.insert(Box::new(Cache::new(zone))),
+        };
+        Some(cache.tz_info(year))
+    });
+    match cached {
+        Ok(Some(tz_info)) => tz_info,
+        // The cache is torn down, or this thread is already using it, for example from a global
+        // allocator that converts a time while `Box::new` runs.
+        Ok(None) | Err(_) => TzInfo::for_year(year),
+    }
 }
 
 struct Cache {
