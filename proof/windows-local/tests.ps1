@@ -2,6 +2,7 @@
 # head, and red on a head mutant that ignores the cached year.
 $ErrorActionPreference = "Stop"
 $root = (Get-Location).Path
+tzutil /s "Pacific Standard Time"
 
 function Expect($dir, $filter, $shouldPass, $needle) {
     Push-Location (Join-Path $root $dir)
